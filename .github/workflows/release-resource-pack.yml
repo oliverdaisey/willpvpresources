@@ -1,0 +1,108 @@
+name: Release Resource Pack
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-resource-pack
+  cancel-in-progress: true
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set pack metadata
+        id: meta
+        run: |
+          echo "repo_name=${GITHUB_REPOSITORY#*/}" >> "$GITHUB_OUTPUT"
+          echo "asset_name=${GITHUB_REPOSITORY#*/}.zip" >> "$GITHUB_OUTPUT"
+
+      - name: Build resource pack zip
+        run: |
+          mkdir -p dist
+          zip -r "dist/${{ steps.meta.outputs.asset_name }}" . \
+            -x ".git/*" \
+            -x ".github/*" \
+            -x "dist/*"
+
+      - name: Create or update latest tag and release
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const tag = "latest";
+            const target = context.sha;
+
+            try {
+              await github.rest.git.updateRef({
+                owner,
+                repo,
+                ref: `tags/${tag}`,
+                sha: target,
+                force: true,
+              });
+            } catch (error) {
+              if (error.status !== 404) {
+                throw error;
+              }
+
+              await github.rest.git.createRef({
+                owner,
+                repo,
+                ref: `refs/tags/${tag}`,
+                sha: target,
+              });
+            }
+
+            try {
+              const existingRelease = await github.rest.repos.getReleaseByTag({
+                owner,
+                repo,
+                tag,
+              });
+
+              await github.rest.repos.updateRelease({
+                owner,
+                repo,
+                release_id: existingRelease.data.id,
+                tag_name: tag,
+                target_commitish: target,
+                name: repo,
+                body: "Latest automated resource pack build.",
+                draft: false,
+                prerelease: false,
+                make_latest: "true",
+              });
+            } catch (error) {
+              if (error.status !== 404) {
+                throw error;
+              }
+
+              await github.rest.repos.createRelease({
+                owner,
+                repo,
+                tag_name: tag,
+                target_commitish: target,
+                name: repo,
+                body: "Latest automated resource pack build.",
+                draft: false,
+                prerelease: false,
+                make_latest: "true",
+              });
+            }
+
+      - name: Upload release asset
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload latest "dist/${{ steps.meta.outputs.asset_name }}" --clobber
